@@ -23,6 +23,7 @@ See file README.md
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <unordered_set>
 
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/undirected_dfs.hpp>
@@ -2272,8 +2273,22 @@ struct CycleDetector : public boost::dfs_visitor<>
 {
 	template<typename T1, typename T2>
 	friend std::vector<std::vector<T2>> findCycles( T1& );
+
+	template<typename T1, typename T2>
+	friend std::unordered_set<T2> findCyclicNodes( T1& );
+
+	template<typename T1, typename T2>
+	friend std::unordered_set<T2>& findNonCyclicNodes( T1&, std::unordered_set<T2>&);
+
 	template<typename T1, typename T2>
 	friend std::vector<std::vector<T2>> findCycles( T1&, UdgcdInfo& );
+
+	template<typename T1, typename T2>
+	friend std::unordered_set<T2> findCyclicNodes( T1&, UdgcdInfo& );
+
+	template<typename T1, typename T2>
+	friend std::unordered_set<T2>& findNonCyclicNodes( T1&, std::unordered_set<T2>&, UdgcdInfo& );
+
 
 	public:
 		CycleDetector()
@@ -2310,6 +2325,193 @@ std::vector<T> CycleDetector<T>::v_source_vertex;
 /**
 Returns a vector of cycles that have been found in the graph
 */
+
+template<typename graph_t, typename vertex_t>
+std::unordered_set<vertex_t>
+findCyclicNodes(
+	graph_t&              gr,
+	UdgcdInfo&            info
+)
+{
+	PRINT_FUNCTION;
+
+	if( boost::num_vertices(gr) < 3 || boost::num_edges(gr) < 3 )
+		return std::unordered_set<vertex_t>();
+
+	CycleDetector<vertex_t> cycleDetector;
+
+// vertex color map
+	std::vector<boost::default_color_type> vertex_color( boost::num_vertices(gr) );
+	auto idmap = boost::get( boost::vertex_index, gr );
+	auto vcmap = make_iterator_property_map( vertex_color.begin(), idmap );
+
+// edge color map
+	std::map<typename graph_t::edge_descriptor, boost::default_color_type> edge_color;
+	auto ecmap = boost::make_assoc_property_map( edge_color );
+
+//////////////////////////////////////
+// step 1: do a DFS
+//////////////////////////////////////
+	info.setTimeStamp( "DFS" );
+	boost::undirected_dfs( gr, cycleDetector, vcmap, ecmap, 0 );
+
+	if( !cycleDetector.cycleDetected() )             // if no detection,
+		return std::unordered_set<vertex_t>(); //  return empty vector, no cycles found
+
+	std::vector<std::vector<vertex_t>> v_cycles;     // else, get the cycles.
+	info.nbSourceVertex = cycleDetector.v_source_vertex.size();
+
+
+//////////////////////////////////////
+// step 2: search paths only starting from vertices that were registered as source vertex
+//////////////////////////////////////
+	info.setTimeStamp( "explore" );
+	for( const auto& vi: cycleDetector.v_source_vertex )
+	{
+		UDGCD_COUT << "* Start exploring from source vertex " << vi << "\n";
+		std::vector<std::vector<vertex_t>> v_paths;
+		std::vector<vertex_t> newv(1, vi ); // start by one of the filed source vertex
+		v_paths.push_back( newv );
+		priv::explore( vi, gr, v_paths, v_cycles, 0, info.maxDepth );    // call of recursive function on each
+	}
+
+	info.nbRawCycles = v_cycles.size();
+	UDGCD_COUT << "-Nb initial cycles: " << info.nbRawCycles << '\n';
+#ifdef UDGCD_DEV_MODE
+	printPaths( std::cout, v_cycles, "raw cycles" );
+#endif
+
+    std::unordered_set<vertex_t> cyclicNodes;
+
+    for (auto& cycle: v_cycles)
+    {
+        cyclicNodes.insert(cycle.begin(), cycle.end());
+    }
+
+    return cyclicNodes;
+}
+
+template<typename graph_t, typename vertex_t>
+std::unordered_set<vertex_t>&
+findNonCyclicNodes(
+	graph_t&              gr,
+    std::unordered_set<vertex_t>& nonCyclicNodes,
+	UdgcdInfo&            info
+)
+{
+	PRINT_FUNCTION;
+
+	if( boost::num_vertices(gr) < 3 || boost::num_edges(gr) < 3 )
+		return nonCyclicNodes;
+
+	CycleDetector<vertex_t> cycleDetector;
+
+// vertex color map
+	std::vector<boost::default_color_type> vertex_color( boost::num_vertices(gr) );
+	auto idmap = boost::get( boost::vertex_index, gr );
+	auto vcmap = make_iterator_property_map( vertex_color.begin(), idmap );
+
+// edge color map
+	std::map<typename graph_t::edge_descriptor, boost::default_color_type> edge_color;
+	auto ecmap = boost::make_assoc_property_map( edge_color );
+
+//////////////////////////////////////
+// step 1: do a DFS
+//////////////////////////////////////
+	info.setTimeStamp( "DFS" );
+	boost::undirected_dfs( gr, cycleDetector, vcmap, ecmap, 0 );
+
+	if( !cycleDetector.cycleDetected() )             // if no detection,
+		return nonCyclicNodes; //  return empty vector, no cycles found
+
+	std::vector<std::vector<vertex_t>> v_cycles;     // else, get the cycles.
+	info.nbSourceVertex = cycleDetector.v_source_vertex.size();
+
+
+//////////////////////////////////////
+// step 2: search paths only starting from vertices that were registered as source vertex
+//////////////////////////////////////
+	info.setTimeStamp( "explore" );
+	for( const auto& vi: cycleDetector.v_source_vertex )
+	{
+		UDGCD_COUT << "* Start exploring from source vertex " << vi << "\n";
+		std::vector<std::vector<vertex_t>> v_paths;
+		std::vector<vertex_t> newv(1, vi ); // start by one of the filed source vertex
+		v_paths.push_back( newv );
+		priv::explore( vi, gr, v_paths, v_cycles, 0, info.maxDepth );    // call of recursive function on each
+	}
+
+	info.nbRawCycles = v_cycles.size();
+	UDGCD_COUT << "-Nb initial cycles: " << info.nbRawCycles << '\n';
+#ifdef UDGCD_DEV_MODE
+	printPaths( std::cout, v_cycles, "raw cycles" );
+#endif
+
+//////////////////////////////////////
+// step 3 (post process): cleanout the cycles by removing the vertices that are not part of the cycle and sort
+//////////////////////////////////////
+
+	info.setTimeStamp( "clean cycles" );
+	auto v_cycles0 = priv::stripCycles( v_cycles, gr, info );
+	info.nbStrippedCycles = v_cycles0.size();
+#ifdef UDGCD_DEV_MODE
+	printPaths( std::cout, v_cycles0, "stripped cycles" );
+#endif
+
+// SORTING
+	info.setTimeStamp( "sorting" );
+	std::vector<std::vector<vertex_t>>* p_cycles = &v_cycles0;
+	std::sort(
+		std::begin(*p_cycles),
+		std::end(*p_cycles),
+		[]                                        // lambda
+		( const std::vector<vertex_t> &a, const std::vector<vertex_t> &b )
+		{
+			return a.size()<b.size();
+		}
+	);
+//	priv::printStatus( std::cout, *p_cycles, __LINE__ );
+
+
+//////////////////////////////////////
+// step 4 (post process): remove redundant cycles using Gaussian Elimination
+//////////////////////////////////////
+
+	info.setTimeStamp( "remove redundant" );
+#if 0
+	auto v_cycles2 = priv::removeRedundant3( *p_cycles, gr );
+#else
+	auto v_cycles2 = priv::removeRedundant( *p_cycles, gr );
+#endif
+	p_cycles = &v_cycles2;
+
+#ifdef UDGCD_DO_CYCLE_CHECKING
+	if( 0 != priv::checkCycles( *p_cycles, gr ).first )
+	{
+		std::cerr << "udgcd: ERROR: INVALID CYCLE DETECTED, line " << __LINE__ << "\n";
+//		exit(1);
+	}
+#endif
+//	priv::printStatus( std::cout, *p_cycles, __LINE__ );
+
+	info.setTimeStamp();
+	info.nbFinalCycles = p_cycles->size();
+
+
+    std::unordered_set<vertex_t> cyclicNodes;
+
+    for (auto& cycle: v_cycles)
+    {
+        for (auto& v : cycle)
+        {
+	        nonCyclicNodes.erase(v);
+        }
+    }
+
+    return nonCyclicNodes;
+}
+
+
 template<typename graph_t, typename vertex_t>
 std::vector<std::vector<vertex_t>>
 findCycles(
@@ -2417,6 +2619,27 @@ findCycles(
 	return *p_cycles;
 }
 //-------------------------------------------------------------------------------------------
+
+/// Version without second argument (default version)
+template<typename graph_t, typename vertex_t>
+std::unordered_set<vertex_t>
+findCyclicNodes( graph_t& g )
+{
+	UdgcdInfo info;
+	return findCyclicNodes<graph_t,vertex_t>( g, info );
+}
+
+template<typename graph_t, typename vertex_t>
+std::unordered_set<vertex_t>&
+findNonCyclicNodes(
+	graph_t&              g,
+    std::unordered_set<vertex_t>& nonCyclicNodes
+)
+{
+	UdgcdInfo info;
+	return findNonCyclicNodes<graph_t,vertex_t>( g, nonCyclicNodes, info );
+}
+
 /// Version without second argument (default version)
 template<typename graph_t, typename vertex_t>
 std::vector<std::vector<vertex_t>>
